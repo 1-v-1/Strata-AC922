@@ -6359,6 +6359,23 @@ int main(int argc, char** argv) {
             }
             // a layer split: each stage's share of the misses from its link to the arena segment on its own socket
             // (the probe above copies from wherever the driver put its buffer)
+            // STRATA_PCIE_PROBE_ARENA0=1 (opt-in: it moves misses from the CPU to the GPU, so the outputs change): the
+            // main device's too.  Its probe's buffer is filled by the main thread and can sit on the other socket (an
+            // AC922: CUDA0 read it at 40 GB/s, its own socket's arena at 72 -> pcie_frac 0.55 instead of 1.00).
+            if (const char* v = std::getenv("STRATA_PCIE_PROBE_ARENA0"); v != nullptr && std::atoi(v) != 0 && !pcie_given) {
+                int dev0 = 0;
+                cudaGetDevice(&dev0);
+                const uint8_t* seg = nullptr;
+                uint64_t seg_bytes = 0;
+                if (src.arena_segment(gpu_numa_node(dev0), seg, seg_bytes) && seg_bytes >= (64ull << 20)) {
+                    const double bw = probe_h2d_from(seg, 64ull << 20);
+                    if (bw > 0.0) {
+                        o.pcie_frac = pcie_frac_for_gbps(bw, 0.55);
+                        std::fprintf(stderr, "strata generate: CUDA%d from its socket's arena: %.1f GB/s -> pcie_frac %.2f "
+                                             "(STRATA_PCIE_PROBE_ARENA0)\n", dev0, bw, o.pcie_frac);
+                    }
+                }
+            }
             for (auto& st : stages) {
                 const uint8_t* seg = nullptr;
                 uint64_t seg_bytes = 0;
