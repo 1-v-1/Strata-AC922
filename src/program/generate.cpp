@@ -3156,6 +3156,8 @@ int main(int argc, char** argv) {
             skip_s = skip;
         }
         void* arena_s = nullptr;
+        size_t mf0 = 0, mf1 = 0, mf2 = 0, mft = 0;   // where the stage's weight memory goes (said below)
+        cudaMemGetInfo(&mf0, &mft);
         if (cudaMalloc(&arena_s, pool_s) != cudaSuccess ||
             !st.wt.load(o.pack, arena_s, pool_s, err, skip_s.empty() ? nullptr : &skip_s)) {
             cudaGetLastError();
@@ -3168,6 +3170,7 @@ int main(int argc, char** argv) {
                          (unsigned long long) (total_b >> 20));
             return false;
         }
+        cudaMemGetInfo(&mf1, &mft);
         if (!o.native_dense_gguf.empty() && !st.dense.load(o.native_dense_gguf, st.wt, err, o.native_ple_key)) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d native dense projections: %s\n", st.dev,
                          err.c_str());
@@ -3176,10 +3179,20 @@ int main(int argc, char** argv) {
         // STRATA_FP16=load: this stage's copies of the FP16-form weights, on its device
         if (strata::fp16_mode() == strata::Fp16Mode::Load) {
             const strata::core::OnDevice on(st.dev);
-            if (!converted.attach(st.wt, st.converted, err)) {
+            cudaMemGetInfo(&mf2, &mft);
+            if (!converted.attach(st.wt, st.converted, err, trim ? lb : -1, trim ? le : -1)) {
                 std::fprintf(stderr, "strata generate: layer split, CUDA%d: %s\n", st.dev, err.c_str());
                 return false;
             }
+        }
+        {
+            size_t mf3 = 0;
+            cudaMemGetInfo(&mf3, &mft);
+            if (mf2 == 0) mf2 = mf3;
+            std::fprintf(stderr, "strata generate: CUDA%d weights of layers %lld-%lld: pack arena %.2f GiB (pool %.2f), native "
+                                 "%.2f GiB, converted %.2f GiB\n", st.dev, (long long) lb, (long long) le - 1,
+                         (double) (mf0 - mf1) / 1073741824.0, (double) pool_s / 1073741824.0,
+                         (double) (mf1 - mf2) / 1073741824.0, (double) (mf2 - mf3) / 1073741824.0);
         }
         return true;
     };

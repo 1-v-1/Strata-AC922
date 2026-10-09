@@ -138,12 +138,19 @@ void LoadConverted::served_names(std::set<std::string>& out) const {
     for (const auto& h : host_) out.insert(h.name);
 }
 
-bool LoadConverted::attach(WeightTable& table, std::vector<void*>& owner, std::string& err) const {
+bool LoadConverted::attach(WeightTable& table, std::vector<void*>& owner, std::string& err, int64_t layer_lo,
+                           int64_t layer_hi) const {
+    auto mine = [&](const std::string& name) {   // a trimmed stage takes its own layers' weights only
+        if (layer_hi < 0 || name.rfind("blk.", 0) != 0) return true;
+        const long l = std::strtol(name.c_str() + 4, nullptr, 10);
+        return l >= layer_lo && l < layer_hi;
+    };
     // ONE allocation per GPU for all of them: 483 cudaMallocs of 5 KB..13 MB each cost ~400 MiB of VRAM more than
     // their bytes (measured: the expert cache lost ~700 slots on 4 GPUs)
     auto align = [](uint64_t n) { return (n + 255) & ~(uint64_t) 255; };
     uint64_t total = 0;
-    for (const auto& h : host_) total += align(h.data.size());
+    for (const auto& h : host_)
+        if (mine(h.name)) total += align(h.data.size());
     void* slab = nullptr;
     if (const cudaError_t e = cudaMalloc(&slab, total); e != cudaSuccess) {
         err = "STRATA_FP16=load: " + std::to_string((unsigned long long) (total >> 20)) + " MiB for the converted "
@@ -153,6 +160,7 @@ bool LoadConverted::attach(WeightTable& table, std::vector<void*>& owner, std::s
     owner.push_back(slab);
     uint64_t off = 0;
     for (const auto& h : host_) {
+        if (!mine(h.name)) continue;
         auto it = table.table_.find(h.name);
         if (it == table.table_.end()) { err = "STRATA_FP16=load: " + h.name + " is not in the pack"; return false; }
         WeightRef& r = it->second;
