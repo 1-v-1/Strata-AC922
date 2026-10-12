@@ -87,16 +87,14 @@ shards at load and keep them as FP16, instead of the BF16 copy `--compat-bf16` w
 is re-packed: the pack's rows stay `Bf16InF32` and the switch replaces them at load. The two variables are
 off by default, so the default path stays byte-identical.
 
-This model stores those tensors in five forms, and the loader now decodes each of them:
+How those 483 are stored depends on the size. The engine now decodes whichever block form the file
+happens to use; before the change, anything other than BF16 / Q8_0 / F16 / F32 was an instant refusal.
 
-| group | tensors | stored as |
-|---|---:|---|
-| the projections read as FP16 activations | 219 | Q6_K 97, Q8_0 97, BF16 24, IQ3_XXS 1 |
-| the gates (`ffn_gate_inp`, `hc_attn_inject`, `hc_ffn_inject`, `ssm_alpha`, `ssm_beta`) | 264 | F32 96, Q6_K 96, IQ3_XXS 72 |
-
-GSQ-RCO's files keep all 483 pre-widened to BF16, so this model is the first place the Q6_K and IQ3_XXS
-forms appear. Before this change `build()` rejected the first Q6_K tensor it met, so the switch could not be
-used on this pack at all.
+| size | 219 projections | 264 gates | first whitelisted tensor refused as |
+|---|---|---|---|
+| IQ3_XXS (85.20 GB, two shards) | Q6_K 97, Q8_0 97, BF16 24, IQ3_XXS 1 | F32 96, Q6_K 96, IQ3_XXS 72 | `Q6_K` |
+| Q4_K_M (128 GB, three shards) | Q5_0 97, Q4_K 74, Q6_K 24, BF16 24 | Q4_K 168, F32 96 | `Q5_0` |
+| GSQ-RCO (any size) | all BF16 | all BF16 | (always worked) |
 
 Checked without a GPU, on bytes both sides read:
 

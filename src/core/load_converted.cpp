@@ -35,15 +35,19 @@ constexpr uint32_t kF32 = 0, kF16 = 1, kQ8_0 = 8, kBF16 = 30;
 
 // The block formats these tensors are stored in when the file keeps them quantized instead of pre-widening them
 // to BF16 the way GSQ-RCO's do: orcarouter's Uncensored files carry the hyper-connection projections and the
-// injections as Q6_K, and the SSM gates and the PLE value table as IQ3_XXS.  Elements, bytes, dequantizer.
+// injections as Q4_K or Q6_K depending on the size, and the SSM gates and the PLE value table as IQ3_XXS.
+// Elements, bytes, dequantizer.  Each dequantizer has been sitting in dequant.hpp since before this change
+// (strata-dequant --check has always exercised it), so adding a row here only routes it - no new code.
 struct Block {
     uint32_t type;
     int elems, bytes;
     void (*fn)(const uint8_t*, float*);
 };
 constexpr Block kBlocks[] = {
-    {14, 256, 210, strata::dequantize_q6_K},   // Q6_K
-    {18, 256, 98, strata::dequantize_iq3_xxs},  // IQ3_XXS
+    {6,  32, 22,  strata::dequantize_q5_0},    // Q5_0 (orcarouter's Q4_K_M size, f16 group)
+    {12, 256, 144, strata::dequantize_q4_K},   // Q4_K (orcarouter's Q4_K_M size, both groups)
+    {14, 256, 210, strata::dequantize_q6_K},   // Q6_K (orcarouter's IQ3_XXS size, both groups)
+    {18, 256, 98, strata::dequantize_iq3_xxs}, // IQ3_XXS (orcarouter's IQ3_XXS size, both groups)
 };
 const Block* block_of(uint32_t type) {
     for (const Block& b : kBlocks) if (b.type == type) return &b;
