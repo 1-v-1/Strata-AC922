@@ -262,7 +262,7 @@ else keeps the default outputs.
 
 | Change | Effect |
 |---|---|
-| **`STRATA_FP16=load`** (+ `STRATA_FP16_GATES=1`): the 483 BF16-form tensors read from the GGUF at load as FP16 (Q8_0/BF16 -> FP16), so every GEMM runs on the tensor cores | prefill **+14-17%**, decode unchanged |
+| **`STRATA_FP16=load`** (+ `STRATA_FP16_GATES=1`): the 483 whitelisted tensors read from the GGUF at load as FP16, so every GEMM runs on the tensor cores. On this model all 483 are BF16-form (Q8_0/BF16 -> FP16); the loader also decodes the Q6_K and IQ3_XXS block forms now, which is how [ORCA.md](ORCA.md) stores 266 of its 483 | prefill **+14-17%**, decode unchanged |
 | **`STRATA_ATTN_WMMA=1`**: int8-KV prompt attention on Volta `wmma` | attention per 8K chunk 405 -> 166 ms; 65K prompt **+17%** |
 | Prompt attention on `mma.m8n8k4`: fks's PR #600 kernel ([commit ee0843d](https://github.com/fks/Strata/commit/ee0843da07ee8da96fa0b5afebfdd8dde6c0b587)), now upstream's Volta path, with the hi and lo halves of the split q (in q.k) and p (in p.v) in their own accumulator chains. In one chain Volta's truncating accumulation dropped most of the lo half (error vs FP64 5.1e-6) | 12.4 vs 14.2 ms (wmma) per 2,048-query chunk at 32K; error vs FP64 **2.3e-6** (the FP32 kernel: 2.4e-6); prompts +1-3% |
 | Decode hc read compiled per token count and weight form (`fused_gr`), loads a row ahead, bank-conflict padding | decode window 32.1 -> 29.9 ms (**+7% decode**), bit-identical |

@@ -251,6 +251,11 @@ if(STRATA_BUILD_TESTS)
   add_executable(gguf_split_test tests/core/gguf_split_test.cpp)
   target_link_libraries(gguf_split_test PRIVATE strata_artifact)
   add_test(NAME gguf_split_test COMMAND gguf_split_test)
+  # the IQ3_XXS block form the loader converts under STRATA_FP16=load: 4096 synthetic blocks against a
+  # reference that re-derives the same encoding from a flat index (no model, no GPU, no ggml to link)
+  add_executable(dequant_iq3_xxs_test tests/core/dequant_iq3_xxs_test.cpp)
+  target_link_libraries(dequant_iq3_xxs_test PRIVATE strata_artifact)
+  add_test(NAME dequant_iq3_xxs_test COMMAND dequant_iq3_xxs_test)
 
   # the hipBLASLt tuning header's architecture gate: RDNA4 siblings share solution IDs, RDNA3 siblings share
   # theirs, cross-family pairs and version mismatches stay rejected (synthetic tables: no model, no GPU)

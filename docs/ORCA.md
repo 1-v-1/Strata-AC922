@@ -80,6 +80,40 @@ The web interface is at `http://127.0.0.1:8080`; API clients use `http://127.0.0
 Vision is not configured in this text-only example. Performance of the original GSQ-RCO model
 does not establish this fine-tune's speed or accuracy.
 
+## Reading those weights as FP16 at load (opt-in)
+
+`STRATA_FP16=load` with `STRATA_FP16_GATES=1` makes the engine read the 483 whitelisted tensors from the
+shards at load and keep them as FP16, instead of the BF16 copy `--compat-bf16` wrote into the pack. Nothing
+is re-packed: the pack's rows stay `Bf16InF32` and the switch replaces them at load. The two variables are
+off by default, so the default path stays byte-identical.
+
+This model stores those tensors in five forms, and the loader now decodes each of them:
+
+| group | tensors | stored as |
+|---|---:|---|
+| the projections read as FP16 activations | 219 | Q6_K 97, Q8_0 97, BF16 24, IQ3_XXS 1 |
+| the gates (`ffn_gate_inp`, `hc_attn_inject`, `hc_ffn_inject`, `ssm_alpha`, `ssm_beta`) | 264 | F32 96, Q6_K 96, IQ3_XXS 72 |
+
+GSQ-RCO's files keep all 483 pre-widened to BF16, so this model is the first place the Q6_K and IQ3_XXS
+forms appear. Before this change `build()` rejected the first Q6_K tensor it met, so the switch could not be
+used on this pack at all.
+
+Checked without a GPU, on bytes both sides read:
+
+- `dequant_iq3_xxs_test`: 4,096 synthetic blocks (all-zero, all-ones, random scale, grid indices and sign
+  words), every stored fp16 bit compared against a reference that re-derives the encoding from a flat index
+  -> 0 mismatches. Perturbing the reference's grid index by one gives 446,942, so the check is not empty.
+- the first 64 blocks of two tensors from the real shards, against a pure-Python reference that re-derives
+  each encoding from a flat index. `strata-dequant` and the reference print the same line for both:
+  `blk.0.ssm_alpha.weight` (IQ3_XXS, 6,272 B) `sum=-3.786504358 sumabs=201.6124055`, first eight
+  `-0.00596792 -0.00835508 0.00119358 0.0185005 0.00596792 -0.0131294 0.00119358 -0.0185005`;
+  `output_hc_down.weight` (Q6_K, 13,440 B) `sum=-4.664942384 sumabs=339.1567574`, first eight
+  `0.00388813 -0 0.0116644 0.031105 0.0155525 0.0116644 -0.0330491 0.0272169`.
+- `LoadConverted::build` on those same two synthetic files: one FP16 tensor each, 32,768 bytes, 0 subnormal,
+  0 flushed. Before the change it returned "output_hc_down.weight is Q6_K in the GGUF" and refused to start.
+- speed and quality with this pack are **not** measured here. The +14-17% prefill figure in `IBM_AC922.md`
+  was measured on UD-Q4_K_XL on 4x Tesla V100; this fine-tune's numbers are its own.
+
 ## Scope and validation
 
 - IQ3_XXS is the target of this change; other Orca quantizations are not validated.

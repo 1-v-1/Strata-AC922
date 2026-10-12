@@ -1,6 +1,7 @@
 // src/core/load_converted.cpp - see include/strata/core/load_converted.hpp.
 #include "strata/core/load_converted.hpp"
 #include "strata/core/weights.hpp"
+#include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/bf16_bits.hpp"
@@ -31,7 +32,24 @@ bool load_converted_kind(const std::string& name, bool& gate) {
 
 namespace {
 constexpr uint32_t kF32 = 0, kF16 = 1, kQ8_0 = 8, kBF16 = 30;
+
+// The block formats these tensors are stored in when the file keeps them quantized instead of pre-widening them
+// to BF16 the way GSQ-RCO's do: orcarouter's Uncensored files carry the hyper-connection projections and the
+// injections as Q6_K, and the SSM gates and the PLE value table as IQ3_XXS.  Elements, bytes, dequantizer.
+struct Block {
+    uint32_t type;
+    int elems, bytes;
+    void (*fn)(const uint8_t*, float*);
+};
+constexpr Block kBlocks[] = {
+    {14, 256, 210, strata::dequantize_q6_K},   // Q6_K
+    {18, 256, 98, strata::dequantize_iq3_xxs},  // IQ3_XXS
+};
+const Block* block_of(uint32_t type) {
+    for (const Block& b : kBlocks) if (b.type == type) return &b;
+    return nullptr;
 }
+}  // namespace
 
 bool LoadConverted::build(const std::vector<std::string>& shards, bool gates_fp16, std::string& err) {
     host_.clear();
@@ -45,12 +63,14 @@ bool LoadConverted::build(const std::vector<std::string>& shards, bool gates_fp1
             for (const auto& t : gguf.tensors()) {
                 bool gate = false;
                 if (!load_converted_kind(t.name, gate)) continue;
-                if (t.type != kQ8_0 && t.type != kBF16 && t.type != kF16 && t.type != kF32) {
-                    err = "STRATA_FP16=load: " + t.name + " is " + t.type_name() + " in the GGUF (Q8_0, BF16, F16 "
-                          "or F32 expected)";
+                const Block* blk = block_of(t.type);
+                if (!blk && t.type != kQ8_0 && t.type != kBF16 && t.type != kF16 && t.type != kF32) {
+                    err = "STRATA_FP16=load: " + t.name + " is " + t.type_name() + " in the GGUF (Q8_0, BF16, F16, "
+                          "F32 or one of the block forms this engine decodes expected)";
                     return false;
                 }
-                if (t.shape.empty() || t.shape.size() > 2 || (t.type == kQ8_0 && t.shape[0] % 32 != 0)) {
+                const int align = blk ? blk->elems : (t.type == kQ8_0 ? 32 : 1);
+                if (t.shape.empty() || t.shape.size() > 2 || t.shape[0] % (uint64_t) align != 0) {
                     err = "STRATA_FP16=load: " + t.name + " has an unexpected shape";
                     return false;
                 }
@@ -100,6 +120,13 @@ bool LoadConverted::build(const std::vector<std::string>& shards, bool gates_fp1
                         }
                     } else if (t.type == kF16) {
                         std::memcpy(dst, src, n * 2);
+                    } else if (const Block* blk = block_of(t.type)) {
+                        // the file keeps the tensor in its block form: decode a block into fp32, round once to fp16
+                        float tmp[256];
+                        for (uint64_t b = 0; b < n / (uint64_t) blk->elems; ++b) {
+                            blk->fn(src + b * (uint64_t) blk->bytes, tmp);
+                            for (int k = 0; k < blk->elems; ++k) put(b * (uint64_t) blk->elems + k, tmp[k]);
+                        }
                     } else {
                         for (uint64_t i = 0; i < n; ++i) {
                             float x;

@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
         // Q5_0 cross-check on the same 64-block window gguf-py is given, using the first Q5_0 tensor.
         for (const auto& t : g.tensors()) {
             if (t.type != 6 && t.type != 20 && t.type != 14 && t.type != 12 && t.type != 13 && t.type != 11 &&
-                t.type != 23)
+                t.type != 23 && t.type != 18)
                 continue;
             const uint8_t* base = g.tensor_data(t);
             const int bsz =
@@ -64,9 +64,17 @@ int main(int argc, char** argv) {
                            ? 210
                            : (t.type == 12
                                   ? 144
-                                  : (t.type == 13 ? 176 : (t.type == 11 ? 110 : (t.type == 23 ? 136 : 22)))));
+                                  : (t.type == 13
+                                         ? 176
+                                         : (t.type == 11
+                                                ? 110
+                                                : (t.type == 23
+                                                       ? 136
+                                                       : (t.type == 18 ? 98 : 22))))));
             const int nel =
-                (t.type == 14 || t.type == 12 || t.type == 13 || t.type == 11 || t.type == 23) ? 256 : 32;
+                (t.type == 14 || t.type == 12 || t.type == 13 || t.type == 11 || t.type == 23 || t.type == 18)
+                    ? 256
+                    : 32;
             const uint64_t nb = t.elements() / (uint64_t)nel;
             double sum = 0, sumabs = 0;
             for (uint64_t b = 0; b < nb && b < 64; ++b) {
@@ -83,6 +91,8 @@ int main(int argc, char** argv) {
                     strata::dequantize_q3_K(base + b * bsz, out);
                 else if (t.type == 23)
                     strata::dequantize_iq4_xs(base + b * bsz, out);
+                else if (t.type == 18)
+                    strata::dequantize_iq3_xxs(base + b * bsz, out);
                 else
                     strata::dequantize_q5_0(base + b * bsz, out);
                 for (int j = 0; j < nel; ++j) {
@@ -105,6 +115,8 @@ int main(int argc, char** argv) {
                 strata::dequantize_q3_K(base, f8);
             else if (t.type == 23)
                 strata::dequantize_iq4_xs(base, f8);
+            else if (t.type == 18)
+                strata::dequantize_iq3_xxs(base, f8);
             else
                 strata::dequantize_q5_0(base, f8);
             std::printf("  REF first8:");
