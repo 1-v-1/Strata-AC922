@@ -1,5 +1,6 @@
 // src/platform/direct_file.cpp - see include/strata/platform/direct_file.hpp.
 #include "strata/platform/direct_file.hpp"
+#include "strata/platform/aux_cpus.hpp"
 #include "strata/platform/thread_affinity.hpp"
 
 #include <algorithm>
@@ -186,7 +187,7 @@ bool DirectFile::open(const std::string& path, std::string& err) {
     // produces exactly one packet; `wait` is the only completion path.
     const int n = io_threads(4);
     for (int i = 0; i < n; ++i)
-        impl_->pool.emplace_back([this] { strata::platform::release_inherited_pin(); impl_->worker(); });
+        impl_->pool.emplace_back([this] { strata::platform::release_inherited_pin(); strata::aux_cpus::pin_current_thread(); impl_->worker(); });
     return true;
 }
 
@@ -314,7 +315,7 @@ bool DirectFile::open(const std::string& path, std::string& err) {
     impl_->size = (uint64_t) st.st_size;
     const int n = io_threads(16);
     for (int i = 0; i < n; ++i)
-        impl_->pool.emplace_back([this] { strata::platform::release_inherited_pin(); impl_->worker(); });
+        impl_->pool.emplace_back([this] { strata::platform::release_inherited_pin(); strata::aux_cpus::pin_current_thread(); impl_->worker(); });
     return true;
 }
 
