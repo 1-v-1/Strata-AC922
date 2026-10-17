@@ -2625,16 +2625,19 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
                 m.xn = set[v].xn;
                 m.T = T;
                 launch_multi(m, v + 1, st, nullptr, 0);
-            }
-            if (T == 1) fused_gr_read(a[3][0], st);
-            const cudaError_t le = cudaGetLastError();         // the launch's fault, if it had one
-            const cudaError_t se = cudaStreamSynchronize(st);   // ... or the one the stream reported after
-            if (le != cudaSuccess || se != cudaSuccess) {
-                why[0] = std::string("a kernel of the check failed ") +
-                         (le != cudaSuccess ? "as it was launched: " : "on the stream after its launch: ") +
-                         cudaGetErrorString(le != cudaSuccess ? le : se);
-                ok = false;
-                break;
+                if (T == 1 && v == 0) fused_gr_read(a[3][0], st);   // the single-token read rides with the plain one
+                const cudaError_t le = cudaGetLastError();          // the launch's fault, if it had one
+                const cudaError_t se = cudaStreamSynchronize(st);    // ... or the stream's after it
+                const cudaError_t fe = le != cudaSuccess ? le : se;
+                if (fe == cudaSuccess) continue;
+                cudaGetLastError();   // consumed here: a read that faults must not poison the card for what follows
+                const std::string msg = std::string(v == 0   ? "the plain read faulted on this card: "
+                                                    : v == 1 ? "the split read faulted on this card: "
+                                                             : "the staged read faulted on this card: ") +
+                                       cudaGetErrorString(fe);
+                if (v == 0) { why[0] = msg; ok = false; break; }     // without the reference there is nothing to check
+                if (v == 1) { ok_variant[2] = false; why[2] = msg; }
+                else        { ok_variant[3] = false; why[3] = msg; }
             }
             if (ok_variant[2] && !all_same(set[0], set[1], T, apply, why[2])) ok_variant[2] = false;
             if (ok && ok_variant[3] && !all_same(set[0], set[2], T, apply, why[3])) ok_variant[3] = false;
@@ -2690,7 +2693,7 @@ void fused_gr_check() {
     static const char* const name[4] = {"", "plain", "split", "staged"};
     for (int v = kHcStaged; v >= kHcSplit; --v)
         if (v <= want && !okv[v] && ran)
-            std::fprintf(stderr, "strata hc: CUDA%d: the %s read differs from the plain read on this card - not used: "
+            std::fprintf(stderr, "strata hc: CUDA%d: the %s read is not used on this card: "
                                  "%s\n", dev, name[v], why[v].c_str());
     static const char* const what[4] = {
         "", "the plain read (the norm per token, the down projection on 41 blocks)",
