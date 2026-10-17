@@ -2521,9 +2521,9 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
     const size_t bytes = h_down.size() * 2 + h_up.size() * 2 + h_inj.size() * 2 +
                          (h_norm.size() + h_R.size() + h_bo.size() + h_ip.size() + NV * n_set) * 4 + 32 * 256;
     uint8_t* base = nullptr;
-    if (cudaMalloc((void**) &base, bytes) != cudaSuccess) {
-        cudaGetLastError();
-        why[0] = "no room for the check (" + std::to_string(bytes >> 20) + " MiB)";
+    const cudaError_t be = cudaMalloc((void**) &base, bytes);
+    if (be != cudaSuccess) {
+        why[0] = "no room for the check (" + std::to_string(bytes >> 20) + " MiB): " + cudaGetErrorString(be);
         return false;
     }
     size_t off = 0;
@@ -2550,16 +2550,22 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
               cudaMemcpyAsync(d_R, h_R.data(), h_R.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess &&
               cudaMemcpyAsync(d_bo, h_bo.data(), h_bo.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess &&
               cudaMemcpyAsync(d_ip, h_ip.data(), h_ip.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess;
-    if (!ok) why[0] = "setting up the check failed";
+    if (!ok) {   // the && chain's fault, named: the cuda error it returned, or the sets that did not fit
+        const cudaError_t ce = cudaGetLastError();
+        why[0] = std::string("setting up the check failed: ") +
+                 (ce == cudaSuccess ? "no room for the check's sets" : cudaGetErrorString(ce));
+    }
     std::vector<float> h1, h2;
     // true when equal; false with the first difference in `w` (or a read-back failure in `ok`)
     auto same = [&](const float* d1, const float* d2, size_t n, const char* what, int T, int apply, std::string& w) {
         h1.resize(n);
         h2.resize(n);
-        if (cudaMemcpyAsync(h1.data(), d1, n * 4, cudaMemcpyDeviceToHost, st) != cudaSuccess ||
-            cudaMemcpyAsync(h2.data(), d2, n * 4, cudaMemcpyDeviceToHost, st) != cudaSuccess ||
-            cudaStreamSynchronize(st) != cudaSuccess) {
-            why[0] = "reading back the check failed";
+        const cudaError_t r1 = cudaMemcpyAsync(h1.data(), d1, n * 4, cudaMemcpyDeviceToHost, st);
+        const cudaError_t r2 = cudaMemcpyAsync(h2.data(), d2, n * 4, cudaMemcpyDeviceToHost, st);
+        const cudaError_t r3 = cudaStreamSynchronize(st);
+        if (r1 != cudaSuccess || r2 != cudaSuccess || r3 != cudaSuccess) {
+            why[0] = std::string("reading back ") + what + " failed: " +
+                     cudaGetErrorString(r1 != cudaSuccess ? r1 : r2 != cudaSuccess ? r2 : r3);
             ok = false;
             return false;
         }
@@ -2609,8 +2615,11 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
                 launch_multi(m, v + 1, st, nullptr, 0);
             }
             if (T == 1) fused_gr_read(a[3][0], st);
-            if (cudaGetLastError() != cudaSuccess || cudaStreamSynchronize(st) != cudaSuccess) {
-                why[0] = "a kernel of the check failed";
+            const cudaError_t le = cudaGetLastError();         // the launch's fault, if it had one
+            const cudaError_t se = cudaStreamSynchronize(st);   // ... or the one the stream reported after
+            if (le != cudaSuccess || se != cudaSuccess) {
+                why[0] = std::string("a kernel of the check failed: ") +
+                         cudaGetErrorString(le != cudaSuccess ? le : se);
                 ok = false;
                 break;
             }

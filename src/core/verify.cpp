@@ -370,6 +370,9 @@ bool one_token_self_commit() {
 #endif
 }
 
+// what the last mapped() pin could not lay down: the size and the cuda error it used to swallow
+static std::string g_map_failed;
+
 bool mapped(size_t bytes, void** h, void** d) {
 #if defined(STRATA_USE_HIP)
     if (g_coherent) {
@@ -381,9 +384,15 @@ bool mapped(size_t bytes, void** h, void** d) {
     }
 #endif
     // portable: a layer split's partner GPU (Verifier::set_partner) and a peer card read or write these too
-    if (cudaHostAlloc(h, bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) return false;
+    const cudaError_t pe = cudaHostAlloc(h, bytes, cudaHostAllocMapped | cudaHostAllocPortable);
+    if (pe != cudaSuccess) {
+        g_map_failed = "cudaHostAlloc(" + std::to_string(bytes >> 10) + " KiB) failed: " + cudaGetErrorString(pe);
+        return false;
+    }
     std::memset(*h, 0, bytes);
-    return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
+    const cudaError_t de = cudaHostGetDevicePointer(d, *h, 0);
+    if (de != cudaSuccess) g_map_failed = std::string("cudaHostGetDevicePointer failed: ") + cudaGetErrorString(de);
+    return de == cudaSuccess;
 }
 
 strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return qsa_shapes(g); }
@@ -767,10 +776,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
               mapped(64, (void**) &h_plan_err_, (void**) &m_plan_err_) &&
               mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
-    if (!ok) { err = "verify: mapped staging allocation failed"; return false; }
+    if (!ok) { err = "verify: mapped staging allocation failed: " + g_map_failed; return false; }
     if (bal_ != nullptr) {   // set_pcie_balance: four stamp words per (layer, group)
         if (!mapped((size_t) g.n_layers * 2 * 4 * 8, (void**) &h_bal_, (void**) &m_bal_)) {
-            err = "verify: mapped balance stamps allocation failed";
+            err = "verify: mapped balance stamps allocation failed: " + g_map_failed;
             return false;
         }
         bal_p_.assign((size_t) g.n_layers * 2, 0.0);
