@@ -2517,6 +2517,18 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
     for (auto& x : h_ip) x = 2.0f * nd(rng);
     for (int v = 0; v < 4; ++v) { ok_variant[v] = v == 1; why[v].clear(); }
 
+    // did the card come in carrying some earlier kernel's error? peek leaves it where it sits for the rest
+#if defined(__HIPCC__)
+    const cudaError_t brought = cudaGetLastError();
+#else
+    const cudaError_t brought = cudaPeekAtLastError();
+#endif
+    if (brought != cudaSuccess) {
+        why[0] = std::string("the card brought an earlier kernel's error to the check: ") +
+                 cudaGetErrorString(brought);
+        return false;
+    }
+
     const size_t n_set = (size_t) TM * (D + D + LR + HC + HC + N);   // R_out, xn, lo, rs, inject, mixed (floats)
     const size_t bytes = h_down.size() * 2 + h_up.size() * 2 + h_inj.size() * 2 +
                          (h_norm.size() + h_R.size() + h_bo.size() + h_ip.size() + NV * n_set) * 4 + 32 * 256;
@@ -2618,7 +2630,8 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
             const cudaError_t le = cudaGetLastError();         // the launch's fault, if it had one
             const cudaError_t se = cudaStreamSynchronize(st);   // ... or the one the stream reported after
             if (le != cudaSuccess || se != cudaSuccess) {
-                why[0] = std::string("a kernel of the check failed: ") +
+                why[0] = std::string("a kernel of the check failed ") +
+                         (le != cudaSuccess ? "as it was launched: " : "on the stream after its launch: ") +
                          cudaGetErrorString(le != cudaSuccess ? le : se);
                 ok = false;
                 break;
