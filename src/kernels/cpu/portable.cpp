@@ -9,6 +9,8 @@
 #include "strata/kernels/cpu/iq_avx2.hpp"
 #include "strata/kernels/cpu/iq_avx512.hpp"
 #include "strata/kernels/cpu/kq_avx2.hpp"
+#include "strata/kernels/cpu/nvfp4_avx512.hpp"
+#include "strata/kernels/cpu/nvfp4_avx2.hpp"
 
 #include <atomic>
 #include <cmath>
@@ -132,6 +134,20 @@ void kq256_gu_rows(int, const uint8_t*, size_t, size_t, int, const void* const*,
 }
 void kq256_rows(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {
     unsupported("the AVX-2 k-quant kernel");
+}
+
+// NVFP4 (v0.1.44): the multi-token kernels are AVX-512/AVX-2 only, so a non-x86 build takes ggml-cpu's vec_dot.
+bool nvfp4_512_fits(int) { return false; }
+void nvfp4_512_gu_rows(const uint8_t*, size_t, size_t, int, const void* const*, int, float* const*, int, int,
+                      float, float) { unsupported("the AVX-512 NVFP4 kernel"); }
+void nvfp4_512_rows(const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int, float) {
+    unsupported("the AVX-512 NVFP4 kernel");
+}
+bool nvfp4_256_fits(int) { return false; }
+void nvfp4_256_gu_rows(const uint8_t*, size_t, size_t, int, const void* const*, int, float* const*, int, int,
+                      float, float) { unsupported("the AVX-2 NVFP4 kernel"); }
+void nvfp4_256_rows(const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int, float) {
+    unsupported("the AVX-2 NVFP4 kernel");
 }
 
 void bf16_rows_dot(const uint16_t* w, int rows, int cols, const float* x, float* out) {
