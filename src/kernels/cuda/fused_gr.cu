@@ -2681,6 +2681,20 @@ void fused_gr_check() {
                      dev);
         return;
     }
+    // the split norm and the staged down are v1's arithmetic split finer, measured on the archs their comments name
+    // (Turing, cp.async cards sm_80+): no Volta card ever ran one in the field, and one faults here at every token
+    // count. a card nobody measured on does not get checked into a variant on a default boot - it runs the read it
+    // has always run; a STRATA_HC_SPLIT that names one still checks it, and a variant that faults names itself.
+    if (cur_dev_volta()) {
+        const char* f = std::getenv("STRATA_HC_SPLIT");
+        if (f == nullptr || f[0] == '\0') {
+            g_variant[dev].store(kHcPlain);
+            std::fprintf(stderr, "strata hc: CUDA%d: the split/staged read is not measured on this Volta card: it was "
+                                 "not checked, and the hyper-connection read runs as the plain one (STRATA_HC_SPLIT=1 "
+                                 "or 2 to check a variant here anyway)\n", dev);
+            return;
+        }
+    }
     bool okv[4];
     std::string why[4];
     const bool ran = fused_gr_selftest(okv, why);
