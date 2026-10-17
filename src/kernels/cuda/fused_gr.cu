@@ -599,8 +599,8 @@ __global__ void __launch_bounds__(Q32_THREADS) gr_up_q32_kernel(GrMulti m) {
     for (int r = warp; r < HC * Q32_COLS; r += Q32_WARPS) {
         const int c = r / Q32_COLS, dd = r - c * Q32_COLS, i = c * N + d0 + dd;
         const uint4* w4 = reinterpret_cast<const uint4*>(m.a[0].w_up + (size_t) i * LR);
-        const Bf16x8 wa = unpack8(__ldg(w4 + lane));
-        const Bf16x8 wb = unpack8(lane < LR / 8 - 32 ? __ldg(w4 + 32 + lane) : make_uint4(0, 0, 0, 0));
+        const uint4 wa = __ldg(w4 + lane);
+        const uint4 wb = lane < LR / 8 - 32 ? __ldg(w4 + 32 + lane) : make_uint4(0, 0, 0, 0);
         // the epilogue inputs of this lane's token, fetched while the dots run
         float rv = 0.0f, wn = 0.0f, rsc = 0.0f, bo = 0.0f, ip = 0.0f;
         bool apply = false;
@@ -616,8 +616,8 @@ __global__ void __launch_bounds__(Q32_THREADS) gr_up_q32_kernel(GrMulti m) {
 #pragma unroll
         for (int k = 0; k < MAX_T; ++k) {
             if (!EXACT_T && k >= T) break;
-            float acc = dot8u_ptr(wa, lo[k] + lane * 8);
-            if (lane < LR / 8 - 32) acc += dot8u_ptr(wb, lo[k] + (32 + lane) * 8);
+            float acc = dot8w(m.a[0].w_f16, wa, lo[k] + lane * 8);
+            if (lane < LR / 8 - 32) acc += dot8w(m.a[0].w_f16, wb, lo[k] + (32 + lane) * 8);
             acc = warp_sum(acc);
             if (lane == k) mine = acc;
         }
