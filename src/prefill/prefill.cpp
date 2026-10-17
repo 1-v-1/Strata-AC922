@@ -2278,7 +2278,6 @@ bool native_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y
 // A BF16-form projection in whatever form the table holds it: BF16 (the pack's), or under STRATA_FP16=load FP16
 // (X and X_lo are then FP16 images) or F32 (the gates: X32, the FP32 activations, and no remainder GEMM).
 bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
-bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
                std::string& err, int64_t ldy = 0, const uint16_t* X_lo = nullptr, const float* X32 = nullptr,
                int64_t ldx = 0, void* stream = nullptr, bool x_f16 = false) {
     if (!w->data) { err = "prefill: " + name + " is not resident"; return false; }
@@ -3071,11 +3070,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                            m.mixed, m.mixed_bf, m.mixed_h, T, m.cs);
                     }
                 }
-                if (!upmixed && !bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, 0, m.cs)) return false;
+                if (!upmixed && !bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, nullptr, 0, m.cs)) return false;
                 if (hcd) {   // STRATA_PF_HCDOWN computed the inject with the down projection
                 } else if (wi->kind == core::WeightKind::F32 && !gr_unfused()) {
                     gr_inject_f32(m.R, m.grs, (const float*) wn->data, (const float*) wi->data, m.inj, T, m.cs);
-                } else if (!bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err, 0, m.xn16_lo, m.xn, ldx != D ? ldx : 0, m.cs, xf16) {
+                } else if (!bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err, 0, m.xn16_lo, m.xn, ldx != D ? ldx : 0, m.cs, xf16)) {
                     return false;
                 }
                 if (upmixed) {
@@ -3444,7 +3443,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     bool cpu_arm = true;                  // auto: this layer may share (false: the arm without)
                     int cpu_set = -1;                     // auto: the wall events' set, -1 when not measured
                     bool cpu_cold = false;                // auto: one-time costs in the window (no reading)
-                    const bool cpu_maybe = !fused_l && pool_hold.held && !stream_all && m.src != nullptr &&
+                    bool cpu_maybe = !fused_l && pool_hold.held && !stream_all && m.src != nullptr &&
                                            !m.cpu_dead && lay.native && !m.pp && !lay.fmt.empty();
                     // The share's two pinned buffers are small (~50 MB) but are had mid-request, when the host may
                     // have nothing left (0.1.41 report: tight RAM, chats failing).  A buffer that cannot be had ends
@@ -4247,6 +4246,27 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         };
                         auto give = [&](size_t c) { give_back(fg_k0 != SIZE_MAX ? std::min(c, fg_k0) : c); };
                         // Stage ahead: the copy stream moves blobs host -> device while the compute stream works.
+                        // In the streamed walk an MMQ group is gathered in ONE launch, after ONE wait on its last
+                        // streamed copy (the copy stream is in order), and its ring slots are released by ONE event.  A
+                        // wait and a record per expert put ~10 us of GPU bubble each on the compute stream under WDDM
+                        // (226 ms of a 32K prompt on an NVFP4 pack).  The same bytes into the same group slots.  A ring
+                        // entry the routing skipped inside an open group first gathers what the group holds so far
+                        // (`flush`), so no more than a group's entries are ever held back from the issuer.
+                        // STRATA_PREFILL_GROUP_GATHER=0: one gather, one wait and one record per expert.
+                        static const bool group_env = [] {
+                            const char* v = std::getenv("STRATA_PREFILL_GROUP_GATHER");
+                            return v == nullptr || std::atoi(v) != 0;
+                        }();
+                        const bool group_gather = group_env && stream_all && use_mmq && lay.native &&
+                                                  MMQ_GROUP <= mmq::kGatherGroupMax;
+                        // The staged walk (a short prompt) groups too, resident and staged experts alike: its ring is
+                        // then STAGE_GRP slots, two groups, and it stages no further ahead than the open group allows,
+                        // so a group's staged slots stay unread-over until its flush (one wait on the last copy, one
+                        // event releasing them all, as in the streamed walk).
+                        const bool group_resident = group_env && !stream_all && use_mmq && lay.native &&
+                                                    MMQ_GROUP <= mmq::kGatherGroupMax;
+                        const bool gg_now = group_gather || group_resident;
+                        const int stage_n = group_resident ? STAGE_GRP : STAGE;
                         int stage_next = 0;
                         std::vector<int> stage_of(order.size(), -1);
                         // the unpinned ones are copied to pinned buffers by the stager's threads, in this order
@@ -4299,27 +4319,6 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             ++stats_.experts_streamed;
                             return true;
                         };
-                        // In the streamed walk an MMQ group is gathered in ONE launch, after ONE wait on its last
-                        // streamed copy (the copy stream is in order), and its ring slots are released by ONE event.  A
-                        // wait and a record per expert put ~10 us of GPU bubble each on the compute stream under WDDM
-                        // (226 ms of a 32K prompt on an NVFP4 pack).  The same bytes into the same group slots.  A ring
-                        // entry the routing skipped inside an open group first gathers what the group holds so far
-                        // (`flush`), so no more than a group's entries are ever held back from the issuer.
-                        // STRATA_PREFILL_GROUP_GATHER=0: one gather, one wait and one record per expert.
-                        static const bool group_env = [] {
-                            const char* v = std::getenv("STRATA_PREFILL_GROUP_GATHER");
-                            return v == nullptr || std::atoi(v) != 0;
-                        }();
-                        const bool group_gather = group_env && stream_all && use_mmq && lay.native &&
-                                                  MMQ_GROUP <= mmq::kGatherGroupMax;
-                        // The staged walk (a short prompt) groups too, resident and staged experts alike: its ring is
-                        // then STAGE_GRP slots, two groups, and it stages no further ahead than the open group allows,
-                        // so a group's staged slots stay unread-over until its flush (one wait on the last copy, one
-                        // event releasing them all, as in the streamed walk).
-                        const bool group_resident = group_env && !stream_all && use_mmq && lay.native &&
-                                                    MMQ_GROUP <= mmq::kGatherGroupMax;
-                        const bool gg_now = group_gather || group_resident;
-                        const int stage_n = group_resident ? STAGE_GRP : STAGE;
                         mmq::GatherGroup gg;
                         int gg_slots[MMQ_GROUP];
                         int gg_nslots = 0;   // ring slots gathered by the next flush

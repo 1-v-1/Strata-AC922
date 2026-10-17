@@ -2643,7 +2643,7 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
     if (herr_h_ != nullptr) *(volatile uint32_t*) herr_h_ = 0;
     if (hdrop_h_ != nullptr) *(volatile uint32_t*) hdrop_h_ = (g_test_drop > 0 && windows + 1 == g_test_drop) ? 1u : 0u;
     std::atomic_thread_fence(std::memory_order_seq_cst);
-    _mm_sfence();
+    strata_store_fence();   // fork guard: dmb oshst on aarch64, sfence on x86
     last_t_ = T;
     last_pos0_ = pos0;
     for (int t = 0; t < T; ++t) last_tokens_[t] = tokens[t];
@@ -2704,7 +2704,7 @@ bool Verifier::adapt_gate_wait(int32_t layer, std::string& err) {
     const Clock::time_point t0 = Clock::now();
     uint32_t spins = 0;
     while (adapt_gate_->reached() < layer) {
-        _mm_pause();
+        strata_cpu_pause();
         if ((++spins & 1023u) != 0) continue;
         if (Clock::now() - t0 > std::chrono::seconds(20)) {
             err = "verify: the adaptive tier's copies for layer " + std::to_string(layer) + " never landed" +
@@ -3153,8 +3153,8 @@ void Verifier::set_plan_slot(int grp) {
 
 // Flag B only rises: a host function of an earlier layer may run after a later layer already raised it directly.
 void Verifier::raise_flag(uint32_t* flag, uint32_t value) {
+#if defined(_WIN32)   // f is only read by the Win32 CAS loop; on other archs the __atomic_* builtins take flag directly
     volatile long* f = (volatile long*) flag;
-#if defined(_WIN32)
     long cur = *f;
     while ((uint32_t) cur < value) {
         const long prev = _InterlockedCompareExchange(f, (long) value, cur);
