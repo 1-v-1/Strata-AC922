@@ -3156,6 +3156,8 @@ int main(int argc, char** argv) {
             skip_s = skip;
         }
         void* arena_s = nullptr;
+        size_t mf0 = 0, mf1 = 0, mf2 = 0, mft = 0;   // where the stage's weight memory goes (said below)
+        cudaMemGetInfo(&mf0, &mft);
         if (cudaMalloc(&arena_s, pool_s) != cudaSuccess ||
             !st.wt.load(o.pack, arena_s, pool_s, err, skip_s.empty() ? nullptr : &skip_s)) {
             cudaGetLastError();
@@ -3168,6 +3170,7 @@ int main(int argc, char** argv) {
                          (unsigned long long) (total_b >> 20));
             return false;
         }
+        cudaMemGetInfo(&mf1, &mft);
         if (!o.native_dense_gguf.empty() && !st.dense.load(o.native_dense_gguf, st.wt, err, o.native_ple_key)) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d native dense projections: %s\n", st.dev,
                          err.c_str());
@@ -3176,10 +3179,20 @@ int main(int argc, char** argv) {
         // STRATA_FP16=load: this stage's copies of the FP16-form weights, on its device
         if (strata::fp16_mode() == strata::Fp16Mode::Load) {
             const strata::core::OnDevice on(st.dev);
-            if (!converted.attach(st.wt, st.converted, err)) {
+            cudaMemGetInfo(&mf2, &mft);
+            if (!converted.attach(st.wt, st.converted, err, trim ? lb : -1, trim ? le : -1)) {
                 std::fprintf(stderr, "strata generate: layer split, CUDA%d: %s\n", st.dev, err.c_str());
                 return false;
             }
+        }
+        {
+            size_t mf3 = 0;
+            cudaMemGetInfo(&mf3, &mft);
+            if (mf2 == 0) mf2 = mf3;
+            std::fprintf(stderr, "strata generate: CUDA%d weights of layers %lld-%lld: pack arena %.2f GiB (pool %.2f), native "
+                                 "%.2f GiB, converted %.2f GiB\n", st.dev, (long long) lb, (long long) le - 1,
+                         (double) (mf0 - mf1) / 1073741824.0, (double) pool_s / 1073741824.0,
+                         (double) (mf1 - mf2) / 1073741824.0, (double) (mf2 - mf3) / 1073741824.0);
         }
         return true;
     };
@@ -6346,6 +6359,23 @@ int main(int argc, char** argv) {
             }
             // a layer split: each stage's share of the misses from its link to the arena segment on its own socket
             // (the probe above copies from wherever the driver put its buffer)
+            // STRATA_PCIE_PROBE_ARENA0=1 (opt-in: it moves misses from the CPU to the GPU, so the outputs change): the
+            // main device's too.  Its probe's buffer is filled by the main thread and can sit on the other socket (an
+            // AC922: CUDA0 read it at 40 GB/s, its own socket's arena at 72 -> pcie_frac 0.55 instead of 1.00).
+            if (const char* v = std::getenv("STRATA_PCIE_PROBE_ARENA0"); v != nullptr && std::atoi(v) != 0 && !pcie_given) {
+                int dev0 = 0;
+                cudaGetDevice(&dev0);
+                const uint8_t* seg = nullptr;
+                uint64_t seg_bytes = 0;
+                if (src.arena_segment(gpu_numa_node(dev0), seg, seg_bytes) && seg_bytes >= (64ull << 20)) {
+                    const double bw = probe_h2d_from(seg, 64ull << 20);
+                    if (bw > 0.0) {
+                        o.pcie_frac = pcie_frac_for_gbps(bw, 0.55);
+                        std::fprintf(stderr, "strata generate: CUDA%d from its socket's arena: %.1f GB/s -> pcie_frac %.2f "
+                                             "(STRATA_PCIE_PROBE_ARENA0)\n", dev0, bw, o.pcie_frac);
+                    }
+                }
+            }
             for (auto& st : stages) {
                 const uint8_t* seg = nullptr;
                 uint64_t seg_bytes = 0;

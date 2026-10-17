@@ -18,6 +18,23 @@
 > | Writes answers (512 tokens, greedy) | **113 tok/s** JSON, 103 code, 107 counting, 84 prose |
 > | Follow-up at 252K depth | the whole prompt reused: first token after 0.26 s, then 60 tok/s |
 >
+> **Update, October 2026: Linux 6.12.** The AC922 now runs a mainline 6.12 kernel with the POWER9 NVLink2 / NPU
+> support that Linux dropped ported back, and five small patches to NVIDIA's 550.54.15 driver (one stops UVM from
+> retrying page migrations into GPU memory that is already full):
+> **[eelgaev/power9-nvidia-nvlink2](https://github.com/eelgaev/power9-nvidia-nvlink2)**. Same Strata build and launch
+> config (`STRATA_STAGE_TRIM=1`, split 12,24,36), RHEL 8 kernel vs 6.12:
+>
+> | | RHEL 8 | Linux 6.12 |
+> |---|---:|---:|
+> | Expert cache slots, GPU 0/1/2/3 | 3856 / 4340 / 4277 / 3624 | **4110 / 4602 / 4535 / 3880** |
+> | Reads your prompt, 7.9K | 4,300-4,390 tok/s | **4,551 tok/s** |
+> | Reads your prompt, 123K | 7,430-7,510 tok/s | **7,711 tok/s** |
+> | Reads your prompt, 135K | 7,430-7,510 tok/s | **7,700 tok/s** |
+> | Writes answers (3 chats, greedy) | 89.4 / 86.9 / 78.0 tok/s | 87.9 / 86.7 / 83.8 tok/s |
+>
+> The 6.12 kernel holds back 256 MiB of each V100 instead of 1 GiB, so every card caches about 260 more experts.
+> Prompt reading is about 3% faster; answer speed is unchanged within noise.
+>
 > What the fork adds: a per-socket page-locked arena and NUMA-aware expert placement, the idle peer GPU fetching
 > over its own NVLink, Volta tensor-core kernels (FP16 weights, prompt attention, fused W4A16 prompt experts, QSA
 > selection), a pipelined layer split, and POWER9 VSX / SMT / per-socket CPU expert pools. Build, run, speed,

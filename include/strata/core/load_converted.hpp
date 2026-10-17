@@ -22,7 +22,10 @@ public:
     /// The canonical names `build` serves (for the arena's skip set).
     void served_names(std::set<std::string>& out) const;
     /// Upload into `table` (one GPU's): each row's data, bytes and kind replaced.  `owner` keeps the allocations.
-    bool attach(WeightTable& table, std::vector<void*>& owner, std::string& err) const;
+    /// `layer_lo` / `layer_hi` (a layer split's trimmed stage, STRATA_STAGE_TRIM): only the blk.N. weights of layers
+    /// [lo, hi), and every other one; -1: all
+    bool attach(WeightTable& table, std::vector<void*>& owner, std::string& err, int64_t layer_lo = -1,
+                int64_t layer_hi = -1) const;
     static void free_all(std::vector<void*>& owner);
 
     size_t tensors_f16 = 0, tensors_f32 = 0;
