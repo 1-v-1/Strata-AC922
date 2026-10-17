@@ -548,6 +548,34 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
         return true;
     }
     wait_prefetches();
+
+    // #1984 #1971: a mapped table that is not in the file cache served this loop as serial demand faults, one random
+    // 4 KiB page at a time (16 rows a token, 16 x the chunk's tokens for a prompt), and the first chunk of a prompt has
+    // only layer 0 to hide it behind: a cold 27 GB table at ~0.2-1 ms a fault is minutes with no progress mark, which
+    // is what the stall watchdog stops.  Ask the OS for the next window's pages in one go (PrefetchVirtualMemory /
+    // MADV_WILLNEED, a hint that cannot change a value: an unfetched page is faulted by the read) while this window is read.
+    constexpr size_t kWin = 4096;   // rows a window
+    auto hint = [&](size_t a, size_t b) {
+        if (impl_->data == nullptr || !g_ple_prefetch) return;
+#if defined(_WIN32)
+        WIN32_MEMORY_RANGE_ENTRY ranges[kWin];
+        ULONG_PTR k = 0;
+        for (size_t i = a; i < b; ++i) {
+            if (rows[i] >= impl_->n_rows) continue;
+            ranges[k].VirtualAddress = (PVOID) (impl_->data + (size_t) rows[i] * impl_->rb);
+            ranges[k].NumberOfBytes = impl_->rb;
+            ++k;
+        }
+        if (k > 0) (void) PrefetchVirtualMemory(GetCurrentProcess(), k, ranges, 0);
+#else
+        for (size_t i = a; i < b; ++i) {
+            if (rows[i] >= impl_->n_rows) continue;
+            const uintptr_t r0 = (uintptr_t) (impl_->data + (size_t) rows[i] * impl_->rb);
+            const uintptr_t p0 = r0 & ~(uintptr_t) 4095;
+            (void) madvise((void*) p0, (size_t) (r0 + impl_->rb - p0), MADV_WILLNEED);
+        }
+#endif
+    };
     // the prompt path's batch (16 rows a token, scattered over the table) on several threads: one thread decoded a
     // 3,072-token chunk's 49,152 rows in ~375 ms on POWER9 and set the pace of a 4-GPU prompt (the first stage waited
     // ~14 ms a chunk for it). Each row decodes into its own slot: the same output on any thread count.
@@ -563,10 +591,14 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
         for (int k = 0; k < nth; ++k) {
             const size_t i0 = (size_t) k * per, i1 = std::min(n, i0 + per);
             if (i0 >= i1) break;
-            th.emplace_back([this, rows, out, i0, i1] {
-                for (size_t i = i0; i < i1; ++i) {
-                    if (rows[i] >= impl_->n_rows) std::memset(out + i * PLE_HEAD_DIM, 0, (size_t) PLE_HEAD_DIM * sizeof(float));
-                    else impl_->decode(impl_->data + (size_t) rows[i] * impl_->rb, out + i * PLE_HEAD_DIM);
+            th.emplace_back([this, rows, out, i0, i1, &hint] {
+                for (size_t w = i0; w < i1; w += kWin) {
+                    if (w + kWin < i1) hint(w + kWin, std::min(i1, w + 2 * kWin));
+                    const size_t e = std::min(i1, w + kWin);
+                    for (size_t i = w; i < e; ++i) {
+                        if (rows[i] >= impl_->n_rows) std::memset(out + i * PLE_HEAD_DIM, 0, (size_t) PLE_HEAD_DIM * sizeof(float));
+                        else impl_->decode(impl_->data + (size_t) rows[i] * impl_->rb, out + i * PLE_HEAD_DIM);
+                    }
                 }
             });
         }
@@ -574,7 +606,12 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
         impl_->bytes_read += (uint64_t) n * impl_->rb;
         return true;
     }
-    for (size_t i = 0; i < n; ++i) read_row(rows[i], out + i * PLE_HEAD_DIM);
+    hint(0, std::min(n, kWin));
+    for (size_t w = 0; w < n; w += kWin) {
+        if (w + kWin < n) hint(w + kWin, std::min(n, w + 2 * kWin));
+        const size_t e = std::min(n, w + kWin);
+        for (size_t i = w; i < e; ++i) read_row(rows[i], out + i * PLE_HEAD_DIM);
+    }
     return true;
 }
 
