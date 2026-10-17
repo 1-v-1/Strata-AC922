@@ -7,6 +7,7 @@
 // own blob layout, and the Q2_0 GGUF down rows of ISTA-DASLab's files) is refused: its kernels are AVX-512 only.
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/iq_avx2.hpp"
+#include "strata/kernels/cpu/iq_avx1.hpp"
 #include "strata/kernels/cpu/iq_avx512.hpp"
 #include "strata/kernels/cpu/kq_avx2.hpp"
 #include "strata/kernels/cpu/nvfp4_avx512.hpp"
@@ -135,6 +136,29 @@ void kq256_gu_rows(int, const uint8_t*, size_t, size_t, int, const void* const*,
 void kq256_rows(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {
     unsupported("the AVX-2 k-quant kernel");
 }
+
+// The older-CPU rungs (issues #1699, #152): q2_avx1.cpp and iq_avx1.cpp compile only in x86 builds, and a non-x86
+// build never passes cpu_avx1_ok(), so these answer like the AVX-2/512 rungs above.  The Q8_K and Q8_1 quantizers
+// keep the scalar reference they must match byte for byte; the row kernels are unreachable here.
+bool iq128_supported(int) noexcept { return false; }
+void iq128_gu_rows(int, const uint8_t*, size_t, size_t, int, const void* const*, int, float* const*, int, int) {
+    unsupported("the AVX1 i-quant kernel");
+}
+bool iq128_down_supported(int) noexcept { return false; }
+void iq128_down_rows(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {
+    unsupported("the AVX1 i-quant kernel");
+}
+void iq256_gu_rows_exact_one(int, const uint8_t*, size_t, size_t, int, const void*, float*, int, int) {
+    unsupported("the AVX-2 i-quant kernel");
+}
+void q2_0_gguf_rows_multi_avx1(const uint8_t*, size_t, int, const ActQ* const*, int, float* const*, int, int) {
+    unsupported("the Q2_0 GGUF row kernel");
+}
+void q2_0_gguf_rows_multi_avx1_legacy(const uint8_t*, size_t, int, const ActQ* const*, int, float* const*, int, int) {
+    unsupported("the Q2_0 GGUF row kernel");
+}
+void act_quant_q8_1_avx1(const float* x, int n, ActQ& a) { act_quant_q8_1(x, n, a); }
+void q8k_quant_avx1(const float* x, void* y, int64_t n) { quantize_row_q8_K_ref(x, y, n); }
 
 // NVFP4 (v0.1.44): the multi-token kernels are AVX-512/AVX-2 only, so a non-x86 build takes ggml-cpu's vec_dot.
 bool nvfp4_512_fits(int) { return false; }
