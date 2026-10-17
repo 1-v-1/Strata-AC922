@@ -151,12 +151,16 @@ bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, i
             cudaGetLastError();
             host_ = nullptr;
             void* d = nullptr;
-            if (cudaMalloc(&d, bytes_) != cudaSuccess ||
-                cudaMemcpy(d, gguf.tensor_data(*t), bytes_, cudaMemcpyHostToDevice) != cudaSuccess) {
+            cudaError_t vram_err = cudaMalloc(&d, bytes_);
+            if (vram_err == cudaSuccess)
+                vram_err = cudaMemcpy(d, gguf.tensor_data(*t), bytes_, cudaMemcpyHostToDevice);
+            if (vram_err != cudaSuccess) {
+                // both failures are this start's cause: the old line carried only host_err, and the fallback's own
+                // error (the one that names the real reason when the pin was fine all along) died in cudaGetLastError
                 if (d) cudaFree(d);
                 cudaGetLastError();
                 err = "native embedding: cannot pin " + std::to_string(bytes_ >> 20) + " MiB: " +
-                      cudaGetErrorString(host_err) + ", nor place it in VRAM";
+                      cudaGetErrorString(host_err) + ", nor place it in VRAM: " + cudaGetErrorString(vram_err);
                 return false;
             }
             std::fprintf(stderr, "strata: native embedding: cannot pin %llu MiB, kept in VRAM instead\n",
