@@ -2802,12 +2802,22 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
                 last_flush = now;
                 const cudaError_t q = cudaStreamQuery(cs_);
                 if (q != cudaErrorNotReady && *seq < want) {
+                    trace_ev("NEVER-RANG", k, l, (int64_t) q);
+                    trace_dump(stderr);   // #649: which handshake died, said by the ring and the breadcrumbs
                     err = "verify batch: layer " + std::to_string(l) + " never rang (" +
                           (q == cudaSuccess ? std::string("graph finished") : std::string(cudaGetErrorString(q))) + ")";
                     return false;
                 }
             }
             if (now - a > std::chrono::seconds(20)) {
+                trace_ev("TIMEOUT", k, l, (int64_t) cudaStreamQuery(cs_));
+                if (g_trace) {   // the words and the breadcrumbs before the release ...
+                    diag(stderr);
+                    const bool drained = release_gpu_waits(5000);
+                    trace_dump(stderr);   // ... and after it: did the GPU move once its waits were raised?
+                    err = "verify batch: timed out at layer " + std::to_string(l) + released_note(drained);
+                    return false;
+                }
                 err = "verify batch: timed out at layer " + std::to_string(l) + released_note(release_gpu_waits(5000));
                 return false;
             }
@@ -2952,12 +2962,24 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
             if (now - b_last_ > std::chrono::milliseconds(2)) {
                 const cudaError_t q = cudaStreamQuery(cs_);
                 if (q != cudaErrorNotReady && *seq < want) {
+                    trace_ev("NEVER-RANG", (int64_t) b_k_, lb_ + (int64_t) b_k_, (int64_t) q);
+                    trace_dump(stderr);   // #649: the ring and the breadcrumbs name the handshake that died
                     err = "verify batch: layer " + std::to_string(lb_ + b_k_) + " never rang (" +
                           (q == cudaSuccess ? std::string("graph finished") : std::string(cudaGetErrorString(q))) + ")";
                     b_running_ = false;
                     return -1;
                 }
                 if (now - b_last_ > std::chrono::seconds(20)) {
+                    trace_ev("TIMEOUT", (int64_t) b_k_, lb_ + (int64_t) b_k_, (int64_t) cudaStreamQuery(cs_));
+                    if (g_trace) {   // the words and the breadcrumbs before the release ...
+                        diag(stderr);
+                        diag_pipelined(stderr, "this stage");
+                        const bool drained = release_gpu_waits(5000);
+                        trace_dump(stderr);   // ... and after it: did the GPU move once its waits were raised?
+                        err = "verify batch: timed out at layer " + std::to_string(lb_ + b_k_) + released_note(drained);
+                        b_running_ = false;
+                        return -1;
+                    }
                     err = "verify batch: timed out at layer " + std::to_string(lb_ + b_k_) + released_note(release_gpu_waits(5000));
                     b_running_ = false;
                     return -1;
