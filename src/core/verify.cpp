@@ -2733,6 +2733,7 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (trace_h_ != nullptr) std::memset(trace_h_, 0, trace_n_ * 8);   // #649: this window's breadcrumbs only
     last_t_ = S;
     for (int t = 0; t < S; ++t) last_rows_[t] = rows[t];
     row_base_ = hbase;   // the graphs' key (and nothing else) reads it until the next stage_batch
@@ -3051,9 +3052,11 @@ void Verifier::diag_pipelined(std::FILE* f, const char* name) const {
         return q == cudaSuccess ? "done" : q == cudaErrorNotReady ? "PENDING" : "error";
     };
     std::fprintf(f, "  %s: %s T=%d pos %lld served %lld/%lld; GPU rang %u, flags served %u A %u B %u; window event %s, "
-                    "commit event %s (commit launched %d)\n", name, fl_active_ ? "IN FLIGHT" : "idle", last_t_,
+                    "commit event %s (commit launched %d); batch %s step %lld/%lld\n",
+                 name, fl_active_ ? "IN FLIGHT" : "idle", last_t_,
                  (long long) last_pos0_, (long long) fl_k_, (long long) fl_total_, rd(h_seq_), rd(h_flag_), rd(h_flagA_),
-                 rd(h_flagB_), ev(ev_done_), ev(ev_commit_), (int) commit_live_);
+                 rd(h_flagB_), ev(ev_done_), ev(ev_commit_), (int) commit_live_, b_running_ ? "IN FLIGHT" : "idle",
+                 (long long) b_k_, (long long) b_steps_);
 }
 
 bool Verifier::capture_all(std::string& err) {
