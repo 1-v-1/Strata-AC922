@@ -2929,6 +2929,30 @@ bool Verifier::batch_launch(int base, int S, const int32_t* tokens, const int64_
     if (le == cudaSuccess) le = cudaGraphLaunch(commit_bm_[bkey(rows, S, base)], cs_);   // right behind it: every row is kept
     if (le != cudaSuccess) { err = std::string("verify: batch launch: ") + cudaGetErrorString(le); return false; }
     (void) cudaStreamQuery(cs_);
+    if (partner_ >= 0 && le_ - lb_ > 0 && le_ - lb_ <= kMaxSteps) {   // the peer's half of this window's PCIe experts
+        // run() queues this per solo window; the batch graph's captured wait_and_clear(m_pdone_ + k) waits on the
+        // same word, so a batch window without it sat on 0 (the word its solo predecessor's partner_fetch had raised
+        // and its own wait had cleared) while the host spun at step 1 with all four words at 1 (#267's timeout)
+        const OnDevice on(partner_);
+        const int64_t capx = (int64_t) max_t_ * ss_->k;
+        strata::kernels::PartnerFetchArgs a{};
+        a.flagA = h_flagA_;
+        a.plan = h_plan_;
+        a.plan_i32 = plan_i32_;
+        a.ptr_off = ((4 + (capx + 1) + 2 * capx) + 1) & ~1ll;
+        a.capx = capx;
+        a.G = 1;   // a batch window is one group
+        a.steps = (int) (le_ - lb_);
+        a.lb = (int) lb_;
+        a.blob_bytes = partner_bytes_;
+        a.staging = staging_;
+        a.per = kStagingBlobs;
+        a.max_blob = (long long) strata::kernels::cpu::expert_layout().max_blob;
+        a.done = m_pdone_;
+        a.arrive = partner_arrive_;
+        cudaMemsetAsync(partner_arrive_, 0, (size_t) (le_ - lb_) * sizeof(unsigned), partner_s_);
+        strata::kernels::partner_fetch(a, 24, partner_s_);
+    }
     if (ple_stage())   // the host's side of the commit (the hash's last two tokens)
         for (int t = 0; t < S; ++t) {
             SessionState& sx = *slots_[(size_t) rows[t]];
